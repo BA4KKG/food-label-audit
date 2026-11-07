@@ -310,12 +310,93 @@ def audit_nutrition(nut_block):
 
 
 # ---------------------------------------------------------------- 主流程
+REQUIRED_ITEMS = [
+    ("食品名称", "真实属性名称"),
+    ("配料", "配料表及引导词"),
+    ("净含量", "净含量与规格"),
+    ("生产者", "生产者/经营者名称地址联系方式"),
+    ("生产日期", "生产日期"),
+    ("保质期到期日", "保质期到期日"),
+    ("贮存条件", "贮存条件"),
+    ("许可证", "食品生产许可证编号"),
+    ("标准代号", "产品标准代号"),
+    ("致敏", "致敏物质提示"),
+    ("营养成分表", "营养成分表"),
+    ("图案", "图案/图片说明"),
+    ("条码", "商品条码与占位符"),
+    ("等级", "质量等级与执行标准一致性"),
+    ("净含量字高", "净含量字符高度"),
+    ("日期标法", "日期标示方式与实际可读性"),
+    ("营养表格式", "营养成分表格式（表头/列名/表格线/每份基准）"),
+    ("定量标示", "配料定量标示（特别强调配料须标含量）"),
+    ("辐照", "辐照食品标示"),
+    ("转基因", "转基因食品标示"),
+]
+
+
+def verify_transcript(data):
+    """全文转录兜底校验：没有转录或条目过少，说明判定不是从对照表做差集得来的。"""
+    tr = data.get("transcript") or {}
+    if isinstance(tr, list):
+        areas = {"转录": tr}
+    elif isinstance(tr, dict):
+        areas = tr
+    else:
+        areas = {}
+    total = 0
+    for v in areas.values():
+        if isinstance(v, (list, tuple)):
+            total += len([x for x in v if str(x).strip()])
+        elif str(v).strip():
+            total += 1
+    warnings = []
+    if not areas:
+        warnings.append("未做全文转录：缺少 transcript 块，判定可能仍属“想到才查”")
+    elif total < 8:
+        warnings.append(f"全文转录条目过少（{total} 条），核对是否漏抄版面文字")
+    return warnings
+
+
+def verify_checklist(checklist):
+    """必查项覆盖校验：漏查的项补成“未核查”，避免报告看起来完整却漏掉强制项。"""
+    names = []
+    for item in checklist:
+        names.append(str(item.get("item", "")) + " " + str(item.get("clause", "")))
+    joined = " ".join(names)
+    missing = []
+    for key, label in REQUIRED_ITEMS:
+        alt = {"许可证": ["生产许可证", "SC", "许可证"], "图案": ["图案", "图片", "图形"],
+               "条码": ["条码", "条形码", "占位"],
+               "净含量字高": ["净含量字符高度", "净含量字高", "净含量字号"],
+               "日期标法": ["日期标示方式", "实际可读性", "日期标法"],
+               "营养表格式": ["营养成分表格式", "营养表格式", "表头", "列名"],
+               "定量标示": ["配料定量标示", "定量标示", "特别强调"],
+               "辐照": ["辐照"],
+               "转基因": ["转基因"],
+               "保质期到期日": ["保质期到期日", "到期日", "保质期"], "配料": ["配料表", "配料"]}.get(key, [key])
+        if not any(a in joined for a in alt):
+            missing.append(label)
+    return missing
+
+
 def build(data, out_path):
     meta = data.get("meta") or {}
     findings = data.get("findings") or []
     nutrition = data.get("nutrition") or {}
     checklist = data.get("checklist") or []
     tasks = data.get("tasks") or []
+
+    missing_items = verify_checklist(checklist)
+    if missing_items:
+        for label in missing_items:
+            checklist.append({
+                "item": f"【必查项未核查】{label}",
+                "clause": "见 SKILL.md 第七节 必查清单",
+                "applicable": True,
+                "result": "无法判定",
+                "note": "本次审核未覆盖该项，须补查后再出报告",
+            })
+    checklist_warnings = [f"必查项缺失：{x}" for x in missing_items] + verify_transcript(data)
 
     # 营养复算前移：结论需要把营养标签问题一并计入，避免“有 7 处营养问题却写未发现不符合项”
     nut_rows, nut_issues = audit_nutrition(nutrition)
@@ -644,6 +725,7 @@ def build(data, out_path):
         "counts": counts,
         "nutrition_issues": nut_issues,
         "nutrition_rows": len(nut_rows),
+        "checklist_warnings": checklist_warnings,
     }
 
 
